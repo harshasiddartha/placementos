@@ -11,7 +11,7 @@ import {
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
 
-import { AdminOnboardingClient } from "./admin-onboarding-client";
+import { AdminOnboardingShell } from "./admin-onboarding-shell";
 
 export type AdminOnboardingQuestionRow = {
   key: string;
@@ -57,14 +57,15 @@ export default async function AdminOnboardingPage() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
-            Onboarding questions
+            Onboarding
           </h1>
           <p className="text-sm text-muted-foreground">
-            Edit the survey shown at{" "}
+            Chat with the assistant to change the survey for{" "}
             <Link href="/onboarding" className="underline underline-offset-4">
               /onboarding
             </Link>
-            . Changes apply on the next page load.
+            , or use the classic editor. Applying a proposal replaces the full
+            questionnaire.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -90,7 +91,7 @@ export default async function AdminOnboardingPage() {
           </CardHeader>
         </Card>
       ) : (
-        <AdminOnboardingClient initialQuestions={questions} />
+        <AdminOnboardingShell initialQuestions={questions} />
       )}
     </main>
   );
