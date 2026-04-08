@@ -53,7 +53,7 @@ export default async function AdminOnboardingPage() {
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-8 p-6">
+    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 p-6 lg:max-w-5xl">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">

@@ -142,6 +142,8 @@ export async function suggestOnboardingWithAiAction(input: {
   model: string;
   instruction: string;
   existingSummary: string;
+  mode?: "full" | "enhance_one" | "add_one";
+  questionJsonForEnhance?: string;
 }): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
   try {
     await assertAdminCookie();
@@ -153,7 +155,40 @@ export async function suggestOnboardingWithAiAction(input: {
     model: input.model,
     userInstruction: input.instruction,
     existingJsonSummary: input.existingSummary,
+    mode: input.mode ?? "full",
+    questionJsonForEnhance: input.questionJsonForEnhance,
   });
+}
+
+export async function setQuestionActiveAction(
+  key: string,
+  active: boolean,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await assertAdminCookie();
+  } catch (e) {
+    return guardError(e);
+  }
+  const k = key.trim();
+  if (!k) {
+    return { ok: false, error: "Missing key." };
+  }
+  try {
+    await prisma.onboardingQuestion.update({
+      where: { key: k },
+      data: { active },
+    });
+    return { ok: true };
+  } catch (e) {
+    if (
+      e instanceof Prisma.PrismaClientKnownRequestError &&
+      e.code === "P2025"
+    ) {
+      return { ok: false, error: "Question not found." };
+    }
+    const msg = e instanceof Error ? e.message : "Update failed.";
+    return { ok: false, error: msg };
+  }
 }
 
 export async function validateOnboardingJsonAction(

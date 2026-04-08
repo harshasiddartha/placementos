@@ -2,15 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { Plus, Sparkles } from "lucide-react";
 
 import {
   applyOnboardingJsonAction,
   deleteOnboardingQuestionAction,
+  setQuestionActiveAction,
   suggestOnboardingWithAiAction,
   upsertOnboardingQuestionAction,
   validateOnboardingJsonAction,
 } from "@/app/admin/onboarding/actions";
 import type { AdminOnboardingQuestionRow } from "@/app/admin/onboarding/page";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -23,7 +26,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import { ONBOARDING_QUESTION_TYPES } from "@/lib/onboarding-question-schema";
+import {
+  ONBOARDING_QUESTION_TYPES,
+  parseQuestionsJsonPayload,
+  validateQuestionsPayload,
+} from "@/lib/onboarding-question-schema";
 
 function configToJson(config: Record<string, unknown>): string {
   try {
@@ -37,6 +44,52 @@ const DEFAULT_CONFIG = `{
   "placeholder": ""
 }`;
 
+function formatOptionsPreview(r: AdminOnboardingQuestionRow): string {
+  if (r.type === "radio") {
+    const opts =
+      (r.config.options as { label?: string; value?: string }[] | undefined) ??
+      [];
+    if (opts.length === 0) return "No options in config";
+    return opts.map((o) => o.label ?? o.value ?? "?").join(" · ");
+  }
+  if (r.type === "skill_sliders") {
+    const sliders =
+      (r.config.sliders as { title?: string }[] | undefined) ?? [];
+    if (sliders.length === 0) return "No sliders in config";
+    return sliders.map((s) => s.title ?? "?").join(" · ");
+  }
+  if (r.type === "short_text") {
+    const ph = r.config.placeholder;
+    const fl = r.config.fieldLabel;
+    if (typeof ph === "string" && ph) return `Placeholder: ${ph}`;
+    if (typeof fl === "string" && fl) return `Label: ${fl}`;
+    return "Short text";
+  }
+  if (r.type === "textarea") {
+    const ph = r.config.placeholder;
+    return typeof ph === "string" && ph ? `Placeholder: ${ph}` : "Long text";
+  }
+  return "—";
+}
+
+function rowToQuestionJson(r: AdminOnboardingQuestionRow): string {
+  return JSON.stringify(
+    {
+      key: r.key,
+      stepIndex: r.stepIndex,
+      orderInStep: r.orderInStep,
+      type: r.type,
+      title: r.title,
+      description: r.description,
+      config: r.config,
+      required: r.required,
+      active: r.active,
+    },
+    null,
+    2,
+  );
+}
+
 export function AdminOnboardingClient({
   initialQuestions,
 }: {
@@ -46,6 +99,7 @@ export function AdminOnboardingClient({
   const [rows, setRows] = useState(initialQuestions);
   const [pending, startTransition] = useTransition();
 
+  const [editingKey, setEditingKey] = useState<string | null>(null);
   const [key, setKey] = useState("");
   const [stepIndex, setStepIndex] = useState(0);
   const [orderInStep, setOrderInStep] = useState(0);
@@ -58,10 +112,12 @@ export function AdminOnboardingClient({
 
   const [aiProvider, setAiProvider] = useState<"gemini" | "groq">("gemini");
   const [aiModel, setAiModel] = useState("gemini-2.0-flash");
-  const [aiInstruction, setAiInstruction] = useState(
-    "Suggest a concise onboarding flow for SWE interview prep: profile name, track choice, goals textarea, and skill sliders for DSA, system design, and communication.",
+  const [enhanceNote, setEnhanceNote] = useState("");
+  const [addWithAiDescription, setAddWithAiDescription] = useState("");
+  const [fullSurveyNote, setFullSurveyNote] = useState(
+    "Keep the same goals but tighten copy and ordering for SWE interview prep.",
   );
-  const [aiOutput, setAiOutput] = useState("");
+  const [aiPreview, setAiPreview] = useState("");
 
   const [banner, setBanner] = useState<{
     kind: "ok" | "err";
@@ -77,7 +133,23 @@ export function AdminOnboardingClient({
     [rows],
   );
 
+  const existingKeys = useMemo(() => rows.map((r) => r.key).join(", "), [rows]);
+
+  const grouped = useMemo(() => {
+    const m = new Map<number, AdminOnboardingQuestionRow[]>();
+    for (const r of rows) {
+      const list = m.get(r.stepIndex) ?? [];
+      list.push(r);
+      m.set(r.stepIndex, list);
+    }
+    for (const list of m.values()) {
+      list.sort((a, b) => a.orderInStep - b.orderInStep);
+    }
+    return [...m.entries()].sort((a, b) => a[0] - b[0]);
+  }, [rows]);
+
   const clearForm = useCallback(() => {
+    setEditingKey(null);
     setKey("");
     setStepIndex(0);
     setOrderInStep(0);
@@ -90,6 +162,7 @@ export function AdminOnboardingClient({
   }, []);
 
   const loadRow = useCallback((r: AdminOnboardingQuestionRow) => {
+    setEditingKey(r.key);
     setKey(r.key);
     setStepIndex(r.stepIndex);
     setOrderInStep(r.orderInStep);
@@ -103,12 +176,52 @@ export function AdminOnboardingClient({
 
   const showBanner = useCallback((kind: "ok" | "err", text: string) => {
     setBanner({ kind, text });
-    window.setTimeout(() => setBanner(null), 8000);
+    window.setTimeout(() => setBanner(null), 7000);
   }, []);
 
   const refresh = useCallback(() => {
     router.refresh();
   }, [router]);
+
+  const loadValidatedSingleIntoForm = useCallback(
+    (jsonText: string) => {
+      try {
+        const parsed = parseQuestionsJsonPayload(jsonText);
+        const v = validateQuestionsPayload(parsed);
+        if (!v.ok) {
+          showBanner("err", v.error);
+          return;
+        }
+        if (v.questions.length !== 1) {
+          showBanner(
+            "err",
+            `Expected exactly 1 question in the JSON array; got ${v.questions.length}.`,
+          );
+          return;
+        }
+        const q = v.questions[0];
+        loadRow({
+          key: q.key,
+          stepIndex: q.stepIndex,
+          orderInStep: q.orderInStep,
+          type: q.type,
+          title: q.title,
+          description: q.description,
+          config:
+            typeof q.config === "object" && q.config !== null && !Array.isArray(q.config)
+              ? (q.config as Record<string, unknown>)
+              : {},
+          required: q.required,
+          active: q.active,
+        });
+        showBanner("ok", "Loaded into editor — review and click Save.");
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Invalid JSON.";
+        showBanner("err", msg);
+      }
+    },
+    [loadRow, showBanner],
+  );
 
   const onSave = () => {
     startTransition(async () => {
@@ -134,7 +247,7 @@ export function AdminOnboardingClient({
   };
 
   const onDelete = (k: string) => {
-    if (!window.confirm(`Delete question "${k}"?`)) return;
+    if (!window.confirm(`Delete “${k}”?`)) return;
     startTransition(async () => {
       const r = await deleteOnboardingQuestionAction(k);
       if (r.ok) {
@@ -147,46 +260,99 @@ export function AdminOnboardingClient({
     });
   };
 
-  const onSuggest = () => {
+  const onToggleActive = (r: AdminOnboardingQuestionRow) => {
     startTransition(async () => {
-      const r = await suggestOnboardingWithAiAction({
+      const next = !r.active;
+      const res = await setQuestionActiveAction(r.key, next);
+      if (res.ok) {
+        showBanner("ok", next ? "Activated." : "Deactivated.");
+        refresh();
+      } else {
+        showBanner("err", res.error);
+      }
+    });
+  };
+
+  const runEnhanceAi = (r: AdminOnboardingQuestionRow) => {
+    if (!enhanceNote.trim()) {
+      showBanner("err", "Describe what to improve.");
+      return;
+    }
+    startTransition(async () => {
+      const res = await suggestOnboardingWithAiAction({
         provider: aiProvider,
         model: aiModel,
-        instruction: aiInstruction,
+        instruction: enhanceNote.trim(),
         existingSummary,
+        mode: "enhance_one",
+        questionJsonForEnhance: rowToQuestionJson(r),
       });
-      if (r.ok) {
-        setAiOutput(r.text);
-        showBanner("ok", "AI draft ready — review JSON below.");
+      if (res.ok) {
+        setAiPreview(res.text);
+        showBanner("ok", "Review the preview, then load into editor or edit JSON.");
       } else {
-        showBanner("err", r.error);
+        showBanner("err", res.error);
       }
     });
   };
 
-  const onValidateAi = () => {
+  const runAddWithAi = () => {
+    if (!addWithAiDescription.trim()) {
+      showBanner("err", "Describe the new question.");
+      return;
+    }
     startTransition(async () => {
-      const r = await validateOnboardingJsonAction(aiOutput);
-      if (r.ok) {
-        showBanner("ok", `Valid: ${r.count} question(s).`);
+      const res = await suggestOnboardingWithAiAction({
+        provider: aiProvider,
+        model: aiModel,
+        instruction: `${addWithAiDescription.trim()}\n\nExisting keys (do not reuse): ${existingKeys || "(none)"}`,
+        existingSummary,
+        mode: "add_one",
+      });
+      if (res.ok) {
+        setAiPreview(res.text);
+        showBanner("ok", "Review the preview, then load into editor.");
       } else {
-        showBanner("err", r.error);
+        showBanner("err", res.error);
       }
     });
   };
 
-  const onApplyAi = () => {
+  const runFullSurveyAi = () => {
+    if (!fullSurveyNote.trim()) {
+      showBanner("err", "Add an instruction for the full survey.");
+      return;
+    }
+    startTransition(async () => {
+      const res = await suggestOnboardingWithAiAction({
+        provider: aiProvider,
+        model: aiModel,
+        instruction: fullSurveyNote.trim(),
+        existingSummary,
+        mode: "full",
+      });
+      if (res.ok) {
+        setAiPreview(res.text);
+        showBanner("ok", "Full survey JSON ready — validate, then apply if you intend to replace/merge.");
+      } else {
+        showBanner("err", res.error);
+      }
+    });
+  };
+
+  const onApplyFullJson = () => {
     if (
       !window.confirm(
-        "Apply this JSON to the database? Existing rows with the same keys will be updated.",
+        "Apply this JSON? Rows with matching keys will be updated; new keys will be inserted.",
       )
     ) {
       return;
     }
     startTransition(async () => {
-      const r = await applyOnboardingJsonAction(aiOutput);
+      const r = await applyOnboardingJsonAction(aiPreview);
       if (r.ok) {
         showBanner("ok", `Applied ${r.applied} question(s).`);
+        setAiPreview("");
         refresh();
       } else {
         showBanner("err", r.error);
@@ -194,99 +360,164 @@ export function AdminOnboardingClient({
     });
   };
 
+  const onValidatePreview = () => {
+    startTransition(async () => {
+      const r = await validateOnboardingJsonAction(aiPreview);
+      if (r.ok) {
+        showBanner("ok", `Valid JSON: ${r.count} question(s).`);
+      } else {
+        showBanner("err", r.error);
+      }
+    });
+  };
+
+  const isNew = !editingKey || editingKey !== key;
+
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-10">
       {banner ? (
-        <p
+        <div
+          role="status"
           className={
             banner.kind === "ok"
-              ? "text-sm text-emerald-600 dark:text-emerald-400"
-              : "text-sm text-destructive"
+              ? "rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300"
+              : "rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
           }
         >
           {banner.text}
-        </p>
+        </div>
       ) : null}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>All questions</CardTitle>
-          <CardDescription>
-            Load a row into the editor, or add a new <code className="text-xs">key</code>.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="max-h-56 overflow-auto rounded-md border border-border/60 text-sm">
-            <table className="w-full border-collapse text-left">
-              <thead className="sticky top-0 bg-muted/80 backdrop-blur">
-                <tr className="border-b border-border/60">
-                  <th className="p-2 font-medium">Key</th>
-                  <th className="p-2 font-medium">Step</th>
-                  <th className="p-2 font-medium">Type</th>
-                  <th className="p-2 font-medium">Title</th>
-                  <th className="p-2 font-medium">Active</th>
-                  <th className="p-2 font-medium"> </th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.key} className="border-b border-border/40">
-                    <td className="p-2 font-mono text-xs">{r.key}</td>
-                    <td className="p-2 tabular-nums">{r.stepIndex}</td>
-                    <td className="p-2">{r.type}</td>
-                    <td className="max-w-[200px] truncate p-2">{r.title}</td>
-                    <td className="p-2">{r.active ? "yes" : "no"}</td>
-                    <td className="flex flex-wrap gap-1 p-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="xs"
-                        onClick={() => loadRow(r)}
-                      >
-                        Load
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="xs"
-                        className="text-destructive hover:text-destructive"
-                        onClick={() => onDelete(r.key)}
-                      >
-                        Delete
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold tracking-tight">
+              Current questions
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Grouped by step. Toggle active, edit, or remove.
+            </p>
           </div>
-        </CardContent>
-      </Card>
+          <Button type="button" size="sm" onClick={clearForm}>
+            <Plus className="size-3.5" data-icon="inline-start" />
+            New question
+          </Button>
+        </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Manual editor</CardTitle>
-          <CardDescription>
-            Types: <code className="text-xs">short_text</code>,{" "}
-            <code className="text-xs">radio</code>,{" "}
-            <code className="text-xs">textarea</code>,{" "}
-            <code className="text-xs">skill_sliders</code>. Match{" "}
-            <code className="text-xs">config</code> to the survey component expectations.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
+        {rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No questions yet. Add one manually or use AI below.
+          </p>
+        ) : (
+          <div className="space-y-6">
+            {grouped.map(([step, list]) => (
+              <div key={step} className="space-y-2">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Step {step}
+                </p>
+                <ul className="space-y-2">
+                  {list.map((r) => (
+                    <li
+                      key={r.key}
+                      className="rounded-xl border border-border/70 bg-card/40 px-4 py-3"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium leading-snug">
+                              {r.title}
+                            </span>
+                            <Badge variant="secondary" className="text-[0.65rem]">
+                              {r.type}
+                            </Badge>
+                            {!r.active ? (
+                              <Badge variant="outline" className="text-[0.65rem]">
+                                off
+                              </Badge>
+                            ) : null}
+                          </div>
+                          <p className="font-mono text-xs text-muted-foreground">
+                            {r.key}
+                          </p>
+                          <p className="text-sm text-muted-foreground">
+                            {formatOptionsPreview(r)}
+                          </p>
+                        </div>
+                        <div className="flex flex-shrink-0 flex-wrap gap-1.5">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="xs"
+                            onClick={() => onToggleActive(r)}
+                            disabled={pending}
+                          >
+                            {r.active ? "Deactivate" : "Activate"}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="xs"
+                            onClick={() => loadRow(r)}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="xs"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => onDelete(r.key)}
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <Separator />
+
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight">
+            {editingKey
+              ? key === editingKey
+                ? `Edit “${editingKey}”`
+                : "Edit question (key changed)"
+              : "New question"}
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            {isNew
+              ? "Choose a unique key. Save creates the row."
+              : "Save updates this question."}
+          </p>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2 sm:col-span-2">
-            <Label htmlFor="q-key">key (unique)</Label>
+            <Label htmlFor="q-key">Key</Label>
             <Input
               id="q-key"
               value={key}
               onChange={(e) => setKey(e.target.value)}
-              placeholder="e.g. display_name"
+              placeholder="e.g. career_goal"
               className="font-mono text-sm"
+              readOnly={Boolean(editingKey && key === editingKey)}
             />
+            {editingKey && key === editingKey ? (
+              <p className="text-xs text-muted-foreground">
+                Key cannot be renamed; delete and recreate if needed.
+              </p>
+            ) : null}
           </div>
           <div className="space-y-2">
-            <Label htmlFor="q-step">stepIndex</Label>
+            <Label htmlFor="q-step">Step</Label>
             <Input
               id="q-step"
               type="number"
@@ -296,7 +527,7 @@ export function AdminOnboardingClient({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="q-order">orderInStep</Label>
+            <Label htmlFor="q-order">Order in step</Label>
             <Input
               id="q-order"
               type="number"
@@ -306,7 +537,7 @@ export function AdminOnboardingClient({
             />
           </div>
           <div className="space-y-2 sm:col-span-2">
-            <Label htmlFor="q-type">type</Label>
+            <Label htmlFor="q-type">Type</Label>
             <select
               id="q-type"
               className="border-input bg-background h-8 w-full rounded-lg border px-2 text-sm"
@@ -321,7 +552,7 @@ export function AdminOnboardingClient({
             </select>
           </div>
           <div className="space-y-2 sm:col-span-2">
-            <Label htmlFor="q-title">title</Label>
+            <Label htmlFor="q-title">Title</Label>
             <Input
               id="q-title"
               value={title}
@@ -329,7 +560,7 @@ export function AdminOnboardingClient({
             />
           </div>
           <div className="space-y-2 sm:col-span-2">
-            <Label htmlFor="q-desc">description</Label>
+            <Label htmlFor="q-desc">Description</Label>
             <Textarea
               id="q-desc"
               value={description}
@@ -338,12 +569,12 @@ export function AdminOnboardingClient({
             />
           </div>
           <div className="space-y-2 sm:col-span-2">
-            <Label htmlFor="q-config">config (JSON)</Label>
+            <Label htmlFor="q-config">Config (JSON)</Label>
             <Textarea
               id="q-config"
               value={configJson}
               onChange={(e) => setConfigJson(e.target.value)}
-              rows={8}
+              rows={6}
               className="font-mono text-xs"
             />
           </div>
@@ -353,7 +584,7 @@ export function AdminOnboardingClient({
               checked={required}
               onChange={(e) => setRequired(e.target.checked)}
             />
-            required
+            Required
           </label>
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -361,35 +592,37 @@ export function AdminOnboardingClient({
               checked={active}
               onChange={(e) => setActive(e.target.checked)}
             />
-            active
+            Active
           </label>
           <div className="flex flex-wrap gap-2 sm:col-span-2">
             <Button type="button" onClick={onSave} disabled={pending}>
-              Save question
+              Save
             </Button>
             <Button type="button" variant="outline" onClick={clearForm}>
-              Clear form
+              Cancel
             </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>AI assistant</CardTitle>
-          <CardDescription>
-            Uses{" "}
-            <code className="text-xs">@google/genai</code> (Gemini Developer API) or{" "}
-            <code className="text-xs">groq-sdk</code>. Set{" "}
-            <code className="text-xs">GEMINI_API_KEY</code> /{" "}
-            <code className="text-xs">GOOGLE_API_KEY</code> or{" "}
-            <code className="text-xs">GROQ_API_KEY</code> in{" "}
-            <code className="text-xs">.env</code>.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
+      <Separator />
+
+      <section className="space-y-4">
+        <div className="flex items-center gap-2">
+          <Sparkles className="size-4 text-amber-500" />
+          <h2 className="text-lg font-semibold tracking-tight">AI</h2>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Generate JSON, then load a single question into the editor or apply a
+          full list to the database.
+        </p>
+
+        <details className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-sm">
+          <summary className="cursor-pointer font-medium">
+            Model settings
+          </summary>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
               <Label htmlFor="ai-provider">Provider</Label>
               <select
                 id="ai-provider"
@@ -399,7 +632,9 @@ export function AdminOnboardingClient({
                   const p = e.target.value as "gemini" | "groq";
                   setAiProvider(p);
                   setAiModel(
-                    p === "gemini" ? "gemini-2.0-flash" : "llama-3.3-70b-versatile",
+                    p === "gemini"
+                      ? "gemini-2.0-flash"
+                      : "llama-3.3-70b-versatile",
                   );
                 }}
               >
@@ -407,60 +642,173 @@ export function AdminOnboardingClient({
                 <option value="groq">Groq</option>
               </select>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="ai-model">Model id</Label>
+            <div className="space-y-1">
+              <Label htmlFor="ai-model">Model</Label>
               <Input
                 id="ai-model"
                 value={aiModel}
                 onChange={(e) => setAiModel(e.target.value)}
-                className="font-mono text-sm"
+                className="font-mono text-xs"
               />
             </div>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="ai-instruction">Instruction</Label>
+        </details>
+
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Enhance with AI</CardTitle>
+              <CardDescription>
+                Pick a question, say what to improve; one updated question is
+                returned.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-1">
+                <Label htmlFor="enhance-target">Question</Label>
+                <select
+                  id="enhance-target"
+                  className="border-input bg-background h-8 w-full rounded-lg border px-2 text-sm"
+                  value={rows.some((x) => x.key === key) ? key : ""}
+                  onChange={(e) => {
+                    const k = e.target.value;
+                    const row = rows.find((x) => x.key === k);
+                    if (row) loadRow(row);
+                  }}
+                >
+                  <option value="">
+                    Select to load in editor…
+                  </option>
+                  {rows.map((r) => (
+                    <option key={r.key} value={r.key}>
+                      {r.title} ({r.key})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="enhance-note">What should change?</Label>
+                <Textarea
+                  id="enhance-note"
+                  value={enhanceNote}
+                  onChange={(e) => setEnhanceNote(e.target.value)}
+                  rows={3}
+                  placeholder="e.g. Shorter title, add a “Not sure” radio option, make sliders 1–10…"
+                />
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                disabled={
+                  pending || rows.length === 0 || !enhanceNote.trim() || !key
+                }
+                onClick={() => {
+                  const r = rows.find((x) => x.key === key);
+                  if (r) runEnhanceAi(r);
+                  else showBanner("err", "Select a question from the list first.");
+                }}
+              >
+                Run enhance
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Add a question with AI</CardTitle>
+              <CardDescription>
+                Describe the new field; AI returns one question with a new key.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-1">
+                <Label htmlFor="add-ai-desc">Description</Label>
+                <Textarea
+                  id="add-ai-desc"
+                  value={addWithAiDescription}
+                  onChange={(e) => setAddWithAiDescription(e.target.value)}
+                  rows={5}
+                  placeholder="e.g. A radio for years of experience: 0–1, 2–4, 5+"
+                />
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                disabled={pending || !addWithAiDescription.trim()}
+                onClick={runAddWithAi}
+              >
+                Generate question
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+
+        <details className="group rounded-lg border border-border/60">
+          <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
+            Advanced — regenerate full survey JSON
+          </summary>
+          <div className="space-y-3 border-t border-border/60 px-4 py-3">
             <Textarea
-              id="ai-instruction"
-              value={aiInstruction}
-              onChange={(e) => setAiInstruction(e.target.value)}
-              rows={4}
+              value={fullSurveyNote}
+              onChange={(e) => setFullSurveyNote(e.target.value)}
+              rows={3}
             />
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" onClick={onSuggest} disabled={pending}>
-              Generate JSON
-            </Button>
             <Button
               type="button"
+              size="sm"
               variant="outline"
-              onClick={onValidateAi}
-              disabled={pending || !aiOutput.trim()}
+              disabled={pending || !fullSurveyNote.trim()}
+              onClick={runFullSurveyAi}
             >
-              Validate JSON
+              Generate full survey
+            </Button>
+          </div>
+        </details>
+
+        <div className="space-y-2">
+          <Label htmlFor="ai-preview">AI output</Label>
+          <Textarea
+            id="ai-preview"
+            value={aiPreview}
+            onChange={(e) => setAiPreview(e.target.value)}
+            rows={10}
+            className="font-mono text-xs"
+            placeholder="Generated JSON appears here…"
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={pending || !aiPreview.trim()}
+              onClick={onValidatePreview}
+            >
+              Validate
             </Button>
             <Button
               type="button"
+              size="sm"
               variant="secondary"
-              onClick={onApplyAi}
-              disabled={pending || !aiOutput.trim()}
+              disabled={pending || !aiPreview.trim()}
+              onClick={() => loadValidatedSingleIntoForm(aiPreview)}
             >
-              Apply to database
+              Load one question into editor
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={pending || !aiPreview.trim()}
+              onClick={onApplyFullJson}
+            >
+              Apply all to database
             </Button>
           </div>
-          <Separator />
-          <div className="space-y-2">
-            <Label htmlFor="ai-out">Model output (edit before apply)</Label>
-            <Textarea
-              id="ai-out"
-              value={aiOutput}
-              onChange={(e) => setAiOutput(e.target.value)}
-              rows={14}
-              className="font-mono text-xs"
-              placeholder='[ { "key": "...", "type": "short_text", ... } ]'
-            />
-          </div>
-        </CardContent>
-      </Card>
+          <p className="text-xs text-muted-foreground">
+            Use “Load one” after enhance or add-one. Use “Apply all” only for a
+            full array you have validated.
+          </p>
+        </div>
+      </section>
     </div>
   );
 }
