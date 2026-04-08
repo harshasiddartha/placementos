@@ -1,0 +1,14 @@
+---
+description: After implementing a new feature, verify it works, then commit and push to GitHub
+alwaysApply: true
+---
+
+# Test, then ship to GitHub
+
+After **implementing a new feature** (or a non-trivial fix that behaves like a feature):
+
+1. **Test it** — run the app or the relevant checks (e.g. `npm run dev` for manual flows, `npm run build`, `npm run lint`, or project tests). Fix failures before considering the work done.
+2. **Commit** — use a clear, conventional message (`feat: …`, `fix: …`) that states what changed and why.
+3. **Push to GitHub** — `git push` to the tracked remote (usually `origin`) so the branch on GitHub stays current.
+
+Do not stop at “code written” when the user expects the change to be integrated: **verify behavior, then push** unless the user explicitly asks to hold commits (e.g. WIP, local-only).
