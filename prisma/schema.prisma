@@ -1,0 +1,74 @@
+// Database: Supabase Postgres (same instance as Supabase Auth).
+// Apply schema: `npx prisma migrate deploy` (uses DIRECT_URL) against your project.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+/// Mirrors `auth.users.id` (created by Supabase Auth). Row inserted via DB trigger on signup.
+model Profile {
+  id          String   @id @db.Uuid
+  displayName String?  @map("display_name")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  documentEmbeddings   DocumentEmbedding[]
+  onboardingResponse   OnboardingResponse?
+
+  @@map("profiles")
+}
+
+/// Editable questionnaire — add rows or toggle `active` in Supabase; keys map to `answers` JSON on responses.
+model OnboardingQuestion {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  key         String   @unique
+  stepIndex   Int      @map("step_index")
+  orderInStep Int      @default(0) @map("order_in_step")
+  type        String
+  title       String
+  description String?
+  config      Json     @default("{}") @map("config") @db.JsonB
+  required    Boolean  @default(true)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([active, stepIndex, orderInStep], map: "onboarding_questions_active_step_idx")
+  @@map("onboarding_questions")
+}
+
+/// One row per user; `answers` is a JSON object keyed by `onboarding_questions.key`.
+model OnboardingResponse {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId      String    @unique @map("user_id") @db.Uuid
+  answers     Json      @default("{}") @map("answers") @db.JsonB
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  profile Profile @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("onboarding_responses")
+}
+
+/// Vector column is managed in SQL migrations (pgvector). Use raw SQL or $executeRaw for similarity search.
+model DocumentEmbedding {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  content   String
+  metadata  Json     @default("{}") @map("metadata") @db.JsonB
+  /// pgvector — dimension 1536 (e.g. text-embedding-3-small)
+  embedding Unsupported("vector(1536)")? @map("embedding")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  profile Profile @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "document_embeddings_user_id_idx")
+  @@map("document_embeddings")
+}

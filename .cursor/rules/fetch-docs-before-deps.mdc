@@ -1,0 +1,14 @@
+---
+description: Fetch latest official docs before new dependencies or vendor integrations
+alwaysApply: true
+---
+
+# Docs before installs and integrations
+
+Before **adding or upgrading npm packages**, **choosing an SDK**, or **implementing a third-party API** (auth, AI providers, databases, hosting, etc.):
+
+1. **Look up current documentation** using the project’s doc tools (e.g. Context7 MCP for libraries, or the vendor’s official docs site). Do not rely only on training-data memory for API names, package names, or breaking changes.
+2. **Confirm** install command, env vars, minimal code sample, and any framework-specific notes (Next.js App Router, Edge vs Node, etc.).
+3. **Then** add dependencies or write integration code to match what the docs specify.
+
+If doc lookup is blocked, state that explicitly and prefer the smallest reversible change (e.g. raw `fetch` to a documented REST endpoint) over guessing SDK usage.
